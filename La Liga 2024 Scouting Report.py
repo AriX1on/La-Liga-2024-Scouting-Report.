@@ -1,459 +1,420 @@
-{
-  "nbformat": 4,
-  "nbformat_minor": 0,
-  "metadata": {
-    "colab": {
-      "provenance": [],
-      "authorship_tag": "ABX9TyNGBo7ilnly47sEHbPxzUKC",
-      "include_colab_link": true
-    },
-    "kernelspec": {
-      "name": "python3",
-      "display_name": "Python 3"
-    },
-    "language_info": {
-      "name": "python"
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from statsbombpy import sb
+from mplsoccer import Pitch
+import soccerdata as sd
+
+# --- Streamlit Configuration ---
+st.set_page_config(layout="wide", page_title="La Liga Player Scouting Report")
+st.title("⚽ La Liga Player Scouting Report")
+
+# --- Custom CSS for larger tab font ---
+st.markdown("""
+    <style>
+        button[data-baseweb="tab"] {
+            font-size: 20px !important;
+            font-weight: 500 !important;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- Data Loading Functions (cached for performance) ---
+@st.cache_data
+def load_understat_data():
+    understat = sd.Understat(leagues="ESP-La Liga", seasons=2024)
+    shots = understat.read_shot_events()
+    team_match_stats = understat.read_team_match_stats()
+    player_stats = understat.read_player_season_stats()
+    player_stats = player_stats.reset_index()
+    return shots, team_match_stats, player_stats
+
+shots, team_match_stats, player_stats = load_understat_data()
+
+# --- Additional Metrics Calculation ---
+# Filter out goalkeepers for threat score
+player_stats_no_g = player_stats[player_stats['position'] != 'GK S'].copy()
+
+# Calculate attacking threat score
+player_stats_no_g['threat_score'] = (
+    player_stats_no_g['goals'] * 1.0 +
+    player_stats_no_g['assists'] * 0.8 +
+    player_stats_no_g['xg'] * 0.7 +
+    player_stats_no_g['xa'] * 0.6 +
+    player_stats_no_g['shots'] * 0.3 +
+    player_stats_no_g['key_passes'] * 0.4
+)
+
+# Sort by threat score and add rank
+ranking_liga = player_stats_no_g.sort_values('threat_score', ascending=False).copy()
+ranking_liga['rank'] = range(1, len(ranking_liga) + 1)
+
+# Calculate per game metrics
+player_stats['goals_assists_pg'] = (player_stats['goals'] + player_stats['assists']) / player_stats['matches']
+player_stats['key_passes_pg'] = player_stats['key_passes'] / player_stats['matches']
+player_stats['xg_pg'] = player_stats['xg'] / player_stats['matches']
+player_stats['xa_pg'] = player_stats['xa'] / player_stats['matches']
+player_stats['shots_pg'] = player_stats['shots'] / player_stats['matches']
+player_stats['xg_buildup_pg'] = player_stats['xg_buildup'] / player_stats['matches']
+
+# Calculate position averages for ratios
+position_avg = player_stats.groupby('position')[['goals_assists_pg', 'key_passes_pg', 'xg_pg',
+                                                   'xa_pg', 'shots_pg', 'xg_buildup_pg']].mean().reset_index()
+
+
+# --- Visualization Functions ---
+
+def display_basic_player_stats(player_name):
+    player_data = player_stats[player_stats['player'] == player_name].iloc[0]
+    player_pos = player_data['position']
+    player_team = player_data['team']
+
+    # --- Basic Stats ---
+    st.subheader(f"Basic Stats for {player_name}")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Position", player_data['position'])
+        st.metric("Goals", player_data['goals'])
+    with col2:
+        st.metric("Matches Played", player_data['matches'])
+        st.metric("Assists", player_data['assists'])
+    with col3:
+        st.metric("Minutes Played", player_data['minutes'])
+        st.metric("Yellow Cards", player_data['yellow_cards'])
+
+    # --- Team Context (Pressing Style) ---
+    team_matches = team_match_stats[
+        (team_match_stats['home_team'] == player_team) |
+        (team_match_stats['away_team'] == player_team)
+    ]
+
+    if not team_matches.empty:
+        team_ppda = (team_matches['home_ppda'].mean() + team_matches['away_ppda'].mean()) / 2
+
+        if team_ppda < 10:
+            press_text = "**High Press**: Team presses high, doesn't let opponent build up."
+            press_icon = "🟢"
+        elif team_ppda < 14:
+            press_text = "**Balanced Press**: Team presses in mid-block, waits for mistakes."
+            press_icon = "🟡"
+        else:
+            press_text = "**Low Block**: Team sits back, protects their area, counters."
+            press_icon = "🔴"
+
+        st.subheader("Team Context")
+        st.write(f"**{player_team}** {press_icon} {press_text}")
+        st.caption(f"PPDA (Passes Allowed Per Defensive Action): **{team_ppda:.1f}** (lower = more pressing)")
+
+        # Player dependency
+        team_goals_total = (team_matches['home_goals'].sum() + team_matches['away_goals'].sum())
+        if team_goals_total > 0 and player_data['goals'] > 0:
+            dependency = (player_data['goals'] / team_goals_total) * 100
+            if dependency > 25:
+                st.write(f"**High dependency**: Involved in **{dependency:.0f}%** of team goals.")
+            elif dependency > 15:
+                st.write(f"**Important contributor**: Involved in **{dependency:.0f}%** of team goals.")
+            else:
+                st.write(f"**Collective contribution**: Involved in **{dependency:.0f}%** of team goals.")
+
+    # --- Offensive Threat Ranking ---
+    st.subheader("Offensive Threat Ranking")
+    player_rank_data = ranking_liga[ranking_liga['player'] == player_name].iloc[0]
+    player_rank = player_rank_data['rank']
+    player_threat_score = player_rank_data['threat_score']
+
+    # Calculate threat ratio vs average
+    avg_threat = ranking_liga['threat_score'].mean()
+    threat_ratio = player_threat_score / avg_threat
+
+    st.write(f"**Rank:** #{player_rank} out of {len(ranking_liga)} players")
+    st.write(f"**Offensive Threat Score:** {player_threat_score:.1f}")
+    st.write(f"**vs League Average:** **{threat_ratio:.2f}x** (1.0x = average)")
+
+    # Color code the ratio
+    if threat_ratio >= 1.5:
+        st.success(f"Elite offensive threat ({threat_ratio:.2f}x above average)")
+    elif threat_ratio >= 1.2:
+        st.info(f"Above average threat ({threat_ratio:.2f}x)")
+    elif threat_ratio >= 0.8:
+        st.warning(f"Average threat ({threat_ratio:.2f}x)")
+    else:
+        st.error(f"Below average threat ({threat_ratio:.2f}x)")
+
+    # Progress bar using ratio (capped at 2.0 for display)
+    display_ratio = min(threat_ratio, 2.0)
+    st.progress(display_ratio / 2.0, text=f"{threat_ratio:.1f}x average")
+
+    # --- Player Profile with RATIOS ---
+    metrics = ['goals_assists_pg', 'key_passes_pg', 'xg_pg', 'xa_pg', 'shots_pg', 'xg_buildup_pg']
+    metric_names = ['Goals+Assists', 'Key passes', 'xG', 'xA', 'Shots', 'xBuildup']
+
+    # Get position average
+    pos_avg = position_avg[position_avg['position'] == player_pos].iloc[0]
+
+    # Calculate ratios
+    ratios = []
+    for metric in metrics:
+        player_val = player_data[metric]
+        avg_val = pos_avg[metric]
+        if avg_val > 0:
+            ratio = player_val / avg_val
+        else:
+            ratio = 1.0
+        ratios.append(ratio)
+
+    # Sort by ratio (best first)
+    sorted_metrics = sorted(zip(metric_names, ratios, metrics), key=lambda x: x[1], reverse=True)
+
+    st.subheader("Player Profile (vs Position Average)")
+    st.caption("Ratio > 1.0 = Better than average | Ratio = 1.0 = Average | Ratio < 1.0 = Below average")
+
+    # Display all metrics in order
+    for name, ratio, metric in sorted_metrics:
+        if ratio >= 1.5:
+            color = "🟢"
+        elif ratio >= 1.2:
+            color = "🔵"
+        elif ratio >= 0.8:
+            color = "⚪"
+        elif ratio >= 0.5:
+            color = "🟡"
+        else:
+            color = "🔴"
+
+        st.write(f"{color} **{name}**: **{ratio:.2f}x** (Player: {player_data[metric]:.2f} | Position avg: {pos_avg[metric]:.2f})")
+
+def plot_divergent_bars(selected_player):
+    """Divergent bar chart showing ratios vs position average (positive/negative)"""
+    player_data = player_stats[player_stats['player'] == selected_player].iloc[0]
+    player_pos = player_data['position']
+
+    # Get position average
+    pos_avg = position_avg[position_avg['position'] == player_pos].iloc[0]
+
+    metrics = ['goals_assists_pg', 'key_passes_pg', 'xg_pg', 'xa_pg', 'shots_pg', 'xg_buildup_pg']
+    metric_names = ['Goals+Assists', 'Key passes', 'xG', 'xA', 'Shots', 'xBuildup']
+
+    # Calculate offsets (ratio - 1.0)
+    offsets = []
+    ratios = []
+    for metric in metrics:
+        player_val = player_data[metric]
+        avg_val = pos_avg[metric]
+        if avg_val > 0:
+            ratio = player_val / avg_val
+        else:
+            ratio = 1.0
+        ratios.append(ratio)
+        offsets.append(ratio - 1.0)
+
+    # Sort by offset for better visualization
+    sorted_pairs = sorted(zip(metric_names, offsets, ratios), key=lambda x: x[1], reverse=True)
+    sorted_names = [p[0] for p in sorted_pairs]
+    sorted_offsets = [p[1] for p in sorted_pairs]
+    sorted_ratios = [p[2] for p in sorted_pairs]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Colors: green for positive, red for negative
+    colors = ['#2ecc71' if offset > 0 else '#e74c3c' for offset in sorted_offsets]
+
+    # Create horizontal bars
+    bars = ax.barh(sorted_names, sorted_offsets, color=colors, edgecolor='black', linewidth=0.5, alpha=0.8)
+
+    # Vertical line at 0 (average = 1.0x)
+    ax.axvline(x=0, color='black', linewidth=1.5, linestyle='-', alpha=0.7)
+
+    # Add value labels
+    for bar, offset, ratio in zip(bars, sorted_offsets, sorted_ratios):
+        if offset > 0:
+            ax.text(bar.get_width() + 0.03, bar.get_y() + bar.get_height()/2,
+                    f'{ratio:.2f}x', va='center', fontsize=10, fontweight='bold')
+        else:
+            ax.text(bar.get_width() - 0.03, bar.get_y() + bar.get_height()/2,
+                    f'{ratio:.2f}x', va='center', ha='right', fontsize=10, fontweight='bold')
+
+    ax.set_xlabel('Difference from Position Average', fontsize=11)
+    ax.set_title(f'{selected_player} - Performance Profile\n(Right = Better than average | Left = Worse than average)', fontsize=12)
+
+    # Add reference line label
+    ax.text(0, -0.5, '← Worse | Average (1.0x) | Better →', ha='center', fontsize=9, color='gray')
+
+    plt.tight_layout()
+    st.pyplot(fig)
+
+def plot_shot_map(selected_player):
+    player_id_val = player_stats[player_stats['player'] == selected_player]['player_id'].values
+    if not player_id_val.size > 0:
+        st.warning(f"No player ID found for {selected_player}.")
+        return
+    player_id = player_id_val[0]
+
+    player_shots = shots[shots['player_id'] == player_id].copy()
+
+    if len(player_shots) == 0:
+        st.info(f"No shot data found for {selected_player}.")
+        return
+
+    pitch = Pitch(pitch_type='statsbomb', half=True, pitch_color='grass', line_color='white')
+    fig, ax = pitch.draw(figsize=(10, 7))
+
+    color_map = {
+        'Goal': 'green',
+        'Saved Shot': 'orange',
+        'Missed Shot': 'red',
+        'Blocked Shot': 'gray',
+        'Shot On Post': 'orange'
     }
-  },
-  "cells": [
-    {
-      "cell_type": "markdown",
-      "metadata": {
-        "id": "view-in-github",
-        "colab_type": "text"
-      },
-      "source": [
-        "<a href=\"https://colab.research.google.com/github/AriX1on/La-Liga-2024-Scouting-Report./blob/main/La%20Liga%202024%20Scouting%20Report.py\" target=\"_parent\"><img src=\"https://colab.research.google.com/assets/colab-badge.svg\" alt=\"Open In Colab\"/></a>"
-      ]
-    },
-    {
-      "cell_type": "code",
-      "execution_count": null,
-      "metadata": {
-        "id": "sozv4xw6J2hH"
-      },
-      "outputs": [],
-      "source": [
-        "import streamlit as st\n",
-        "import pandas as pd\n",
-        "import numpy as np\n",
-        "import matplotlib.pyplot as plt\n",
-        "from statsbombpy import sb\n",
-        "from mplsoccer import Pitch\n",
-        "import soccerdata as sd\n",
-        "\n",
-        "# --- Streamlit Configuration ---\n",
-        "st.set_page_config(layout=\"wide\", page_title=\"La Liga Player Scouting Report\")\n",
-        "st.title(\"⚽ La Liga Player Scouting Report\")\n",
-        "\n",
-        "# --- Custom CSS for larger tab font ---\n",
-        "st.markdown(\"\"\"\n",
-        "    <style>\n",
-        "        button[data-baseweb=\"tab\"] {\n",
-        "            font-size: 20px !important;\n",
-        "            font-weight: 500 !important;\n",
-        "        }\n",
-        "    </style>\n",
-        "\"\"\", unsafe_allow_html=True)\n",
-        "\n",
-        "# --- Data Loading Functions (cached for performance) ---\n",
-        "@st.cache_data\n",
-        "def load_understat_data():\n",
-        "    understat = sd.Understat(leagues=\"ESP-La Liga\", seasons=2024)\n",
-        "    shots = understat.read_shot_events()\n",
-        "    team_match_stats = understat.read_team_match_stats()\n",
-        "    player_stats = understat.read_player_season_stats()\n",
-        "    player_stats = player_stats.reset_index()\n",
-        "    return shots, team_match_stats, player_stats\n",
-        "\n",
-        "shots, team_match_stats, player_stats = load_understat_data()\n",
-        "\n",
-        "# --- Additional Metrics Calculation ---\n",
-        "# Filter out goalkeepers for threat score\n",
-        "player_stats_no_g = player_stats[player_stats['position'] != 'GK S'].copy()\n",
-        "\n",
-        "# Calculate attacking threat score\n",
-        "player_stats_no_g['threat_score'] = (\n",
-        "    player_stats_no_g['goals'] * 1.0 +\n",
-        "    player_stats_no_g['assists'] * 0.8 +\n",
-        "    player_stats_no_g['xg'] * 0.7 +\n",
-        "    player_stats_no_g['xa'] * 0.6 +\n",
-        "    player_stats_no_g['shots'] * 0.3 +\n",
-        "    player_stats_no_g['key_passes'] * 0.4\n",
-        ")\n",
-        "\n",
-        "# Sort by threat score and add rank\n",
-        "ranking_liga = player_stats_no_g.sort_values('threat_score', ascending=False).copy()\n",
-        "ranking_liga['rank'] = range(1, len(ranking_liga) + 1)\n",
-        "\n",
-        "# Calculate per game metrics\n",
-        "player_stats['goals_assists_pg'] = (player_stats['goals'] + player_stats['assists']) / player_stats['matches']\n",
-        "player_stats['key_passes_pg'] = player_stats['key_passes'] / player_stats['matches']\n",
-        "player_stats['xg_pg'] = player_stats['xg'] / player_stats['matches']\n",
-        "player_stats['xa_pg'] = player_stats['xa'] / player_stats['matches']\n",
-        "player_stats['shots_pg'] = player_stats['shots'] / player_stats['matches']\n",
-        "player_stats['xg_buildup_pg'] = player_stats['xg_buildup'] / player_stats['matches']\n",
-        "\n",
-        "# Calculate position averages for ratios\n",
-        "position_avg = player_stats.groupby('position')[['goals_assists_pg', 'key_passes_pg', 'xg_pg',\n",
-        "                                                   'xa_pg', 'shots_pg', 'xg_buildup_pg']].mean().reset_index()\n",
-        "\n",
-        "\n",
-        "# --- Visualization Functions ---\n",
-        "\n",
-        "def display_basic_player_stats(player_name):\n",
-        "    player_data = player_stats[player_stats['player'] == player_name].iloc[0]\n",
-        "    player_pos = player_data['position']\n",
-        "    player_team = player_data['team']\n",
-        "\n",
-        "    # --- Basic Stats ---\n",
-        "    st.subheader(f\"Basic Stats for {player_name}\")\n",
-        "    col1, col2, col3 = st.columns(3)\n",
-        "    with col1:\n",
-        "        st.metric(\"Position\", player_data['position'])\n",
-        "        st.metric(\"Goals\", player_data['goals'])\n",
-        "    with col2:\n",
-        "        st.metric(\"Matches Played\", player_data['matches'])\n",
-        "        st.metric(\"Assists\", player_data['assists'])\n",
-        "    with col3:\n",
-        "        st.metric(\"Minutes Played\", player_data['minutes'])\n",
-        "        st.metric(\"Yellow Cards\", player_data['yellow_cards'])\n",
-        "\n",
-        "    # --- Team Context (Pressing Style) ---\n",
-        "    team_matches = team_match_stats[\n",
-        "        (team_match_stats['home_team'] == player_team) |\n",
-        "        (team_match_stats['away_team'] == player_team)\n",
-        "    ]\n",
-        "\n",
-        "    if not team_matches.empty:\n",
-        "        team_ppda = (team_matches['home_ppda'].mean() + team_matches['away_ppda'].mean()) / 2\n",
-        "\n",
-        "        if team_ppda < 10:\n",
-        "            press_text = \"**High Press**: Team presses high, doesn't let opponent build up.\"\n",
-        "            press_icon = \"🟢\"\n",
-        "        elif team_ppda < 14:\n",
-        "            press_text = \"**Balanced Press**: Team presses in mid-block, waits for mistakes.\"\n",
-        "            press_icon = \"🟡\"\n",
-        "        else:\n",
-        "            press_text = \"**Low Block**: Team sits back, protects their area, counters.\"\n",
-        "            press_icon = \"🔴\"\n",
-        "\n",
-        "        st.subheader(\"Team Context\")\n",
-        "        st.write(f\"**{player_team}** {press_icon} {press_text}\")\n",
-        "        st.caption(f\"PPDA (Passes Allowed Per Defensive Action): **{team_ppda:.1f}** (lower = more pressing)\")\n",
-        "\n",
-        "        # Player dependency\n",
-        "        team_goals_total = (team_matches['home_goals'].sum() + team_matches['away_goals'].sum())\n",
-        "        if team_goals_total > 0 and player_data['goals'] > 0:\n",
-        "            dependency = (player_data['goals'] / team_goals_total) * 100\n",
-        "            if dependency > 25:\n",
-        "                st.write(f\"**High dependency**: Involved in **{dependency:.0f}%** of team goals.\")\n",
-        "            elif dependency > 15:\n",
-        "                st.write(f\"**Important contributor**: Involved in **{dependency:.0f}%** of team goals.\")\n",
-        "            else:\n",
-        "                st.write(f\"**Collective contribution**: Involved in **{dependency:.0f}%** of team goals.\")\n",
-        "\n",
-        "    # --- Offensive Threat Ranking ---\n",
-        "    st.subheader(\"Offensive Threat Ranking\")\n",
-        "    player_rank_data = ranking_liga[ranking_liga['player'] == player_name].iloc[0]\n",
-        "    player_rank = player_rank_data['rank']\n",
-        "    player_threat_score = player_rank_data['threat_score']\n",
-        "\n",
-        "    # Calculate threat ratio vs average\n",
-        "    avg_threat = ranking_liga['threat_score'].mean()\n",
-        "    threat_ratio = player_threat_score / avg_threat\n",
-        "\n",
-        "    st.write(f\"**Rank:** #{player_rank} out of {len(ranking_liga)} players\")\n",
-        "    st.write(f\"**Offensive Threat Score:** {player_threat_score:.1f}\")\n",
-        "    st.write(f\"**vs League Average:** **{threat_ratio:.2f}x** (1.0x = average)\")\n",
-        "\n",
-        "    # Color code the ratio\n",
-        "    if threat_ratio >= 1.5:\n",
-        "        st.success(f\"Elite offensive threat ({threat_ratio:.2f}x above average)\")\n",
-        "    elif threat_ratio >= 1.2:\n",
-        "        st.info(f\"Above average threat ({threat_ratio:.2f}x)\")\n",
-        "    elif threat_ratio >= 0.8:\n",
-        "        st.warning(f\"Average threat ({threat_ratio:.2f}x)\")\n",
-        "    else:\n",
-        "        st.error(f\"Below average threat ({threat_ratio:.2f}x)\")\n",
-        "\n",
-        "    # Progress bar using ratio (capped at 2.0 for display)\n",
-        "    display_ratio = min(threat_ratio, 2.0)\n",
-        "    st.progress(display_ratio / 2.0, text=f\"{threat_ratio:.1f}x average\")\n",
-        "\n",
-        "    # --- Player Profile with RATIOS ---\n",
-        "    metrics = ['goals_assists_pg', 'key_passes_pg', 'xg_pg', 'xa_pg', 'shots_pg', 'xg_buildup_pg']\n",
-        "    metric_names = ['Goals+Assists', 'Key passes', 'xG', 'xA', 'Shots', 'xBuildup']\n",
-        "\n",
-        "    # Get position average\n",
-        "    pos_avg = position_avg[position_avg['position'] == player_pos].iloc[0]\n",
-        "\n",
-        "    # Calculate ratios\n",
-        "    ratios = []\n",
-        "    for metric in metrics:\n",
-        "        player_val = player_data[metric]\n",
-        "        avg_val = pos_avg[metric]\n",
-        "        if avg_val > 0:\n",
-        "            ratio = player_val / avg_val\n",
-        "        else:\n",
-        "            ratio = 1.0\n",
-        "        ratios.append(ratio)\n",
-        "\n",
-        "    # Sort by ratio (best first)\n",
-        "    sorted_metrics = sorted(zip(metric_names, ratios, metrics), key=lambda x: x[1], reverse=True)\n",
-        "\n",
-        "    st.subheader(\"Player Profile (vs Position Average)\")\n",
-        "    st.caption(\"Ratio > 1.0 = Better than average | Ratio = 1.0 = Average | Ratio < 1.0 = Below average\")\n",
-        "\n",
-        "    # Display all metrics in order\n",
-        "    for name, ratio, metric in sorted_metrics:\n",
-        "        if ratio >= 1.5:\n",
-        "            color = \"🟢\"\n",
-        "        elif ratio >= 1.2:\n",
-        "            color = \"🔵\"\n",
-        "        elif ratio >= 0.8:\n",
-        "            color = \"⚪\"\n",
-        "        elif ratio >= 0.5:\n",
-        "            color = \"🟡\"\n",
-        "        else:\n",
-        "            color = \"🔴\"\n",
-        "\n",
-        "        st.write(f\"{color} **{name}**: **{ratio:.2f}x** (Player: {player_data[metric]:.2f} | Position avg: {pos_avg[metric]:.2f})\")\n",
-        "\n",
-        "def plot_divergent_bars(selected_player):\n",
-        "    \"\"\"Divergent bar chart showing ratios vs position average (positive/negative)\"\"\"\n",
-        "    player_data = player_stats[player_stats['player'] == selected_player].iloc[0]\n",
-        "    player_pos = player_data['position']\n",
-        "\n",
-        "    # Get position average\n",
-        "    pos_avg = position_avg[position_avg['position'] == player_pos].iloc[0]\n",
-        "\n",
-        "    metrics = ['goals_assists_pg', 'key_passes_pg', 'xg_pg', 'xa_pg', 'shots_pg', 'xg_buildup_pg']\n",
-        "    metric_names = ['Goals+Assists', 'Key passes', 'xG', 'xA', 'Shots', 'xBuildup']\n",
-        "\n",
-        "    # Calculate offsets (ratio - 1.0)\n",
-        "    offsets = []\n",
-        "    ratios = []\n",
-        "    for metric in metrics:\n",
-        "        player_val = player_data[metric]\n",
-        "        avg_val = pos_avg[metric]\n",
-        "        if avg_val > 0:\n",
-        "            ratio = player_val / avg_val\n",
-        "        else:\n",
-        "            ratio = 1.0\n",
-        "        ratios.append(ratio)\n",
-        "        offsets.append(ratio - 1.0)\n",
-        "\n",
-        "    # Sort by offset for better visualization\n",
-        "    sorted_pairs = sorted(zip(metric_names, offsets, ratios), key=lambda x: x[1], reverse=True)\n",
-        "    sorted_names = [p[0] for p in sorted_pairs]\n",
-        "    sorted_offsets = [p[1] for p in sorted_pairs]\n",
-        "    sorted_ratios = [p[2] for p in sorted_pairs]\n",
-        "\n",
-        "    fig, ax = plt.subplots(figsize=(10, 6))\n",
-        "\n",
-        "    # Colors: green for positive, red for negative\n",
-        "    colors = ['#2ecc71' if offset > 0 else '#e74c3c' for offset in sorted_offsets]\n",
-        "\n",
-        "    # Create horizontal bars\n",
-        "    bars = ax.barh(sorted_names, sorted_offsets, color=colors, edgecolor='black', linewidth=0.5, alpha=0.8)\n",
-        "\n",
-        "    # Vertical line at 0 (average = 1.0x)\n",
-        "    ax.axvline(x=0, color='black', linewidth=1.5, linestyle='-', alpha=0.7)\n",
-        "\n",
-        "    # Add value labels\n",
-        "    for bar, offset, ratio in zip(bars, sorted_offsets, sorted_ratios):\n",
-        "        if offset > 0:\n",
-        "            ax.text(bar.get_width() + 0.03, bar.get_y() + bar.get_height()/2,\n",
-        "                    f'{ratio:.2f}x', va='center', fontsize=10, fontweight='bold')\n",
-        "        else:\n",
-        "            ax.text(bar.get_width() - 0.03, bar.get_y() + bar.get_height()/2,\n",
-        "                    f'{ratio:.2f}x', va='center', ha='right', fontsize=10, fontweight='bold')\n",
-        "\n",
-        "    ax.set_xlabel('Difference from Position Average', fontsize=11)\n",
-        "    ax.set_title(f'{selected_player} - Performance Profile\\n(Right = Better than average | Left = Worse than average)', fontsize=12)\n",
-        "\n",
-        "    # Add reference line label\n",
-        "    ax.text(0, -0.5, '← Worse | Average (1.0x) | Better →', ha='center', fontsize=9, color='gray')\n",
-        "\n",
-        "    plt.tight_layout()\n",
-        "    st.pyplot(fig)\n",
-        "\n",
-        "def plot_shot_map(selected_player):\n",
-        "    player_id_val = player_stats[player_stats['player'] == selected_player]['player_id'].values\n",
-        "    if not player_id_val.size > 0:\n",
-        "        st.warning(f\"No player ID found for {selected_player}.\")\n",
-        "        return\n",
-        "    player_id = player_id_val[0]\n",
-        "\n",
-        "    player_shots = shots[shots['player_id'] == player_id].copy()\n",
-        "\n",
-        "    if len(player_shots) == 0:\n",
-        "        st.info(f\"No shot data found for {selected_player}.\")\n",
-        "        return\n",
-        "\n",
-        "    pitch = Pitch(pitch_type='statsbomb', half=True, pitch_color='grass', line_color='white')\n",
-        "    fig, ax = pitch.draw(figsize=(10, 7))\n",
-        "\n",
-        "    color_map = {\n",
-        "        'Goal': 'green',\n",
-        "        'Saved Shot': 'orange',\n",
-        "        'Missed Shot': 'red',\n",
-        "        'Blocked Shot': 'gray',\n",
-        "        'Shot On Post': 'orange'\n",
-        "    }\n",
-        "\n",
-        "    for _, shot in player_shots.iterrows():\n",
-        "        x = shot['location_x'] * 120\n",
-        "        y = (1 - shot['location_y']) * 80\n",
-        "        result = shot['result']\n",
-        "        color = color_map.get(result, 'blue')\n",
-        "\n",
-        "        pitch.scatter(x, y, s=150, c=color, marker='o', edgecolor='black',\n",
-        "                     linewidth=1, alpha=0.8, ax=ax)\n",
-        "\n",
-        "    ax.set_title(f'{selected_player} - Shot Map ({len(player_shots)} shots)', fontsize=14)\n",
-        "\n",
-        "    from matplotlib.patches import Patch\n",
-        "    legend_elements = [\n",
-        "        Patch(facecolor='green', edgecolor='black', label='Goal'),\n",
-        "        Patch(facecolor='orange', edgecolor='black', label='Saved Shot'),\n",
-        "        Patch(facecolor='red', edgecolor='black', label='Missed Shot'),\n",
-        "        Patch(facecolor='gray', edgecolor='black', label='Blocked Shot'),\n",
-        "        Patch(facecolor='orange', edgecolor='black', label='Shot On Post')\n",
-        "    ]\n",
-        "    ax.legend(handles=legend_elements, loc='upper right', fontsize=10)\n",
-        "    st.pyplot(fig)\n",
-        "\n",
-        "def plot_team_impact(selected_player):\n",
-        "    player_team_val = player_stats[player_stats['player'] == selected_player]['team'].values\n",
-        "    if not player_team_val.size > 0:\n",
-        "        st.warning(f\"No team found for {selected_player}.\")\n",
-        "        return\n",
-        "    player_team = player_team_val[0]\n",
-        "\n",
-        "    team_matches = team_match_stats[\n",
-        "        (team_match_stats['home_team'] == player_team) |\n",
-        "        (team_match_stats['away_team'] == player_team)\n",
-        "    ]\n",
-        "\n",
-        "    if team_matches.empty:\n",
-        "        st.info(f\"No matches found for {player_team}.\")\n",
-        "        return\n",
-        "\n",
-        "    team_home_xg = team_matches[team_matches['home_team'] == player_team]['home_xg'].mean()\n",
-        "    team_away_xg = team_matches[team_matches['away_team'] == player_team]['away_xg'].mean()\n",
-        "    team_xg = np.nanmean([team_home_xg, team_away_xg]) if not pd.isna(team_home_xg) or not pd.isna(team_away_xg) else 0\n",
-        "\n",
-        "    team_home_ppda = team_matches[team_matches['home_team'] == player_team]['home_ppda'].mean()\n",
-        "    team_away_ppda = team_matches[team_matches['away_team'] == player_team]['away_ppda'].mean()\n",
-        "    team_ppda = np.nanmean([team_home_ppda, team_away_ppda]) if not pd.isna(team_home_ppda) or not pd.isna(team_away_ppda) else 0\n",
-        "\n",
-        "    league_xg = (team_match_stats['home_xg'].mean() + team_match_stats['away_xg'].mean()) / 2\n",
-        "    league_ppda = (team_match_stats['home_ppda'].mean() + team_match_stats['away_ppda'].mean()) / 2\n",
-        "\n",
-        "    xg_diff = team_xg - league_xg\n",
-        "    ppda_diff = league_ppda - team_ppda\n",
-        "\n",
-        "    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))\n",
-        "\n",
-        "    # xG Chart (horizontal)\n",
-        "    metrics_xg = ['League Average', 'Team Average']\n",
-        "    values_xg = [league_xg, team_xg]\n",
-        "    colors_xg = ['gray', 'green' if xg_diff > 0 else 'red']\n",
-        "\n",
-        "    bars1 = ax1.barh(metrics_xg, values_xg, color=colors_xg, edgecolor='black', linewidth=1.5)\n",
-        "    ax1.axvline(x=league_xg, color='gray', linestyle='--', alpha=0.5)\n",
-        "    ax1.set_xlabel('xG per game')\n",
-        "    ax1.set_title(f'xG Generated: {player_team}')\n",
-        "    for bar, val in zip(bars1, values_xg):\n",
-        "        ax1.text(val + 0.05, bar.get_y() + bar.get_height()/2,\n",
-        "                 f'{val:.2f}', ha='left', va='center', fontweight='bold')\n",
-        "    ax1.text(max(values_xg) * 0.7, 0.5, f'Δ = {xg_diff:+.2f}',\n",
-        "             ha='center', va='center', fontsize=11, fontweight='bold',\n",
-        "             color='green' if xg_diff > 0 else 'red',\n",
-        "             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))\n",
-        "\n",
-        "    # PPDA Chart (horizontal - lower is better)\n",
-        "    metrics_ppda = ['League Average', 'Team Average']\n",
-        "    values_ppda = [league_ppda, team_ppda]\n",
-        "    colors_ppda = ['gray', 'green' if team_ppda < league_ppda else 'red']\n",
-        "\n",
-        "    bars2 = ax2.barh(metrics_ppda, values_ppda, color=colors_ppda, edgecolor='black', linewidth=1.5)\n",
-        "    ax2.axvline(x=league_ppda, color='gray', linestyle='--', alpha=0.5)\n",
-        "    ax2.set_xlabel('PPDA (lower = better pressing)')\n",
-        "    ax2.set_title(f'Pressing Intensity: {player_team}')\n",
-        "    for bar, val in zip(bars2, values_ppda):\n",
-        "        ax2.text(val + 0.5, bar.get_y() + bar.get_height()/2,\n",
-        "                 f'{val:.1f}', ha='left', va='center', fontweight='bold')\n",
-        "    ax2.text(max(values_ppda) * 0.7, 0.5, f'Δ = {team_ppda - league_ppda:+.1f}',\n",
-        "             ha='center', va='center', fontsize=11, fontweight='bold',\n",
-        "             color='green' if team_ppda < league_ppda else 'red',\n",
-        "             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))\n",
-        "\n",
-        "    plt.tight_layout()\n",
-        "    st.pyplot(fig)\n",
-        "\n",
-        "\n",
-        "# --- Sidebar for Player Selection ---\n",
-        "st.sidebar.header(\"Player Selection\")\n",
-        "\n",
-        "sort_option = st.sidebar.radio(\"Sort Players By:\", ('Alphabetical', 'By Threat Rank'))\n",
-        "\n",
-        "if sort_option == 'Alphabetical':\n",
-        "    player_list = sorted(player_stats['player'].unique().tolist())\n",
-        "else:\n",
-        "    player_list = ranking_liga['player'].tolist()\n",
-        "\n",
-        "selected_player = st.sidebar.selectbox(\"Select a Player:\", player_list)\n",
-        "\n",
-        "\n",
-        "# --- Main App Content ---\n",
-        "if selected_player:\n",
-        "    st.header(f\"Scouting Report for {selected_player}\")\n",
-        "\n",
-        "    tab1, tab2, tab3, tab4 = st.tabs([\"Full Report\", \"Performance Profile\", \"Shot Map\", \"Team Impact\"])\n",
-        "\n",
-        "    with tab1:\n",
-        "        with st.expander(\"ℹ️ Information\", expanded=False):\n",
-        "            st.write(\"**Instrucciones o notas para este reporte:**\")\n",
-        "            st.write(\"- Aquí puedes añadir información manualmente\")\n",
-        "            st.write(\"- Explicar qué significan los percentiles y ratios\")\n",
-        "            st.write(\"- Contexto sobre los datos (La Liga 2023-24)\")\n",
-        "        display_basic_player_stats(selected_player)\n",
-        "\n",
-        "    with tab2:\n",
-        "        st.subheader(\"Performance Profile (vs Position Average)\")\n",
-        "        with st.expander(\"ℹ️ Information\", expanded=False):\n",
-        "            st.write(\"**Cómo interpretar este gráfico:**\")\n",
-        "            st.write(\"- Barras hacia la derecha (verde): Mejor que el promedio de su posición\")\n",
-        "            st.write(\"- Barras hacia la izquierda (rojo): Peor que el promedio de su posición\")\n",
-        "            st.write(\"- Línea vertical en 0: Promedio de la posición (1.0x)\")\n",
-        "        st.caption(\"→ Better than average | ← Worse than average | = Average (1.0x)\")\n",
-        "        plot_divergent_bars(selected_player)\n",
-        "\n",
-        "    with tab3:\n",
-        "        st.subheader(\"Shot Map\")\n",
-        "        with st.expander(\"ℹ️ Information\", expanded=False):\n",
-        "            st.write(\"**Interpretación del mapa de tiros:**\")\n",
-        "            st.write(\"- 🟢 Verde: Gol\")\n",
-        "            st.write(\"- 🟠 Naranja: Tiro atajado o al poste\")\n",
-        "            st.write(\"- 🔴 Rojo: Tiro fallado\")\n",
-        "            st.write(\"- ⚪ Gris: Tiro bloqueado\")\n",
-        "        plot_shot_map(selected_player)\n",
-        "\n",
-        "    with tab4:\n",
-        "        st.subheader(\"Player Impact on Team\")\n",
-        "        with st.expander(\"ℹ️ Information\", expanded=False):\n",
-        "            st.write(\"**Cómo interpretar el impacto del jugador:**\")\n",
-        "            st.write(\"- xG Generado: Goles esperados creados por el equipo con el jugador\")\n",
-        "            st.write(\"- PPDA: Presión ejercida (menor = mejor presión)\")\n",
-        "            st.write(\"- Δ positivo (verde) = Mejor que el promedio de la liga\")\n",
-        "            st.write(\"- Δ negativo (rojo) = Peor que el promedio de la liga\")\n",
-        "        plot_team_impact(selected_player)\n",
-        "else:\n",
-        "    st.info(\"Please select a player from the left sidebar to view their scouting report.\")"
-      ]
-    }
-  ]
-}
+
+    for _, shot in player_shots.iterrows():
+        x = shot['location_x'] * 120
+        y = (1 - shot['location_y']) * 80
+        result = shot['result']
+        color = color_map.get(result, 'blue')
+
+        pitch.scatter(x, y, s=150, c=color, marker='o', edgecolor='black',
+                     linewidth=1, alpha=0.8, ax=ax)
+
+    ax.set_title(f'{selected_player} - Shot Map ({len(player_shots)} shots)', fontsize=14)
+
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='green', edgecolor='black', label='Goal'),
+        Patch(facecolor='orange', edgecolor='black', label='Saved Shot'),
+        Patch(facecolor='red', edgecolor='black', label='Missed Shot'),
+        Patch(facecolor='gray', edgecolor='black', label='Blocked Shot'),
+        Patch(facecolor='orange', edgecolor='black', label='Shot On Post')
+    ]
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=10)
+    st.pyplot(fig)
+
+def plot_team_impact(selected_player):
+    player_team_val = player_stats[player_stats['player'] == selected_player]['team'].values
+    if not player_team_val.size > 0:
+        st.warning(f"No team found for {selected_player}.")
+        return
+    player_team = player_team_val[0]
+
+    team_matches = team_match_stats[
+        (team_match_stats['home_team'] == player_team) |
+        (team_match_stats['away_team'] == player_team)
+    ]
+
+    if team_matches.empty:
+        st.info(f"No matches found for {player_team}.")
+        return
+
+    team_home_xg = team_matches[team_matches['home_team'] == player_team]['home_xg'].mean()
+    team_away_xg = team_matches[team_matches['away_team'] == player_team]['away_xg'].mean()
+    team_xg = np.nanmean([team_home_xg, team_away_xg]) if not pd.isna(team_home_xg) or not pd.isna(team_away_xg) else 0
+
+    team_home_ppda = team_matches[team_matches['home_team'] == player_team]['home_ppda'].mean()
+    team_away_ppda = team_matches[team_matches['away_team'] == player_team]['away_ppda'].mean()
+    team_ppda = np.nanmean([team_home_ppda, team_away_ppda]) if not pd.isna(team_home_ppda) or not pd.isna(team_away_ppda) else 0
+
+    league_xg = (team_match_stats['home_xg'].mean() + team_match_stats['away_xg'].mean()) / 2
+    league_ppda = (team_match_stats['home_ppda'].mean() + team_match_stats['away_ppda'].mean()) / 2
+
+    xg_diff = team_xg - league_xg
+    ppda_diff = league_ppda - team_ppda
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # xG Chart (horizontal)
+    metrics_xg = ['League Average', 'Team Average']
+    values_xg = [league_xg, team_xg]
+    colors_xg = ['gray', 'green' if xg_diff > 0 else 'red']
+
+    bars1 = ax1.barh(metrics_xg, values_xg, color=colors_xg, edgecolor='black', linewidth=1.5)
+    ax1.axvline(x=league_xg, color='gray', linestyle='--', alpha=0.5)
+    ax1.set_xlabel('xG per game')
+    ax1.set_title(f'xG Generated: {player_team}')
+    for bar, val in zip(bars1, values_xg):
+        ax1.text(val + 0.05, bar.get_y() + bar.get_height()/2,
+                 f'{val:.2f}', ha='left', va='center', fontweight='bold')
+    ax1.text(max(values_xg) * 0.7, 0.5, f'Δ = {xg_diff:+.2f}',
+             ha='center', va='center', fontsize=11, fontweight='bold',
+             color='green' if xg_diff > 0 else 'red',
+             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+    # PPDA Chart (horizontal - lower is better)
+    metrics_ppda = ['League Average', 'Team Average']
+    values_ppda = [league_ppda, team_ppda]
+    colors_ppda = ['gray', 'green' if team_ppda < league_ppda else 'red']
+
+    bars2 = ax2.barh(metrics_ppda, values_ppda, color=colors_ppda, edgecolor='black', linewidth=1.5)
+    ax2.axvline(x=league_ppda, color='gray', linestyle='--', alpha=0.5)
+    ax2.set_xlabel('PPDA (lower = better pressing)')
+    ax2.set_title(f'Pressing Intensity: {player_team}')
+    for bar, val in zip(bars2, values_ppda):
+        ax2.text(val + 0.5, bar.get_y() + bar.get_height()/2,
+                 f'{val:.1f}', ha='left', va='center', fontweight='bold')
+    ax2.text(max(values_ppda) * 0.7, 0.5, f'Δ = {team_ppda - league_ppda:+.1f}',
+             ha='center', va='center', fontsize=11, fontweight='bold',
+             color='green' if team_ppda < league_ppda else 'red',
+             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+    plt.tight_layout()
+    st.pyplot(fig)
+
+
+# --- Sidebar for Player Selection ---
+st.sidebar.header("Player Selection")
+
+sort_option = st.sidebar.radio("Sort Players By:", ('Alphabetical', 'By Threat Rank'))
+
+if sort_option == 'Alphabetical':
+    player_list = sorted(player_stats['player'].unique().tolist())
+else:
+    player_list = ranking_liga['player'].tolist()
+
+selected_player = st.sidebar.selectbox("Select a Player:", player_list)
+
+
+# --- Main App Content ---
+if selected_player:
+    st.header(f"Scouting Report for {selected_player}")
+
+    tab1, tab2, tab3, tab4 = st.tabs(["Full Report", "Performance Profile", "Shot Map", "Team Impact"])
+
+    with tab1:
+        with st.expander("ℹ️ Information", expanded=False):
+            st.write("**Instrucciones o notas para este reporte:**")
+            st.write("- Aquí puedes añadir información manualmente")
+            st.write("- Explicar qué significan los percentiles y ratios")
+            st.write("- Contexto sobre los datos (La Liga 2023-24)")
+        display_basic_player_stats(selected_player)
+
+    with tab2:
+        st.subheader("Performance Profile (vs Position Average)")
+        with st.expander("ℹ️ Information", expanded=False):
+            st.write("**Cómo interpretar este gráfico:**")
+            st.write("- Barras hacia la derecha (verde): Mejor que el promedio de su posición")
+            st.write("- Barras hacia la izquierda (rojo): Peor que el promedio de su posición")
+            st.write("- Línea vertical en 0: Promedio de la posición (1.0x)")
+        st.caption("→ Better than average | ← Worse than average | = Average (1.0x)")
+        plot_divergent_bars(selected_player)
+
+    with tab3:
+        st.subheader("Shot Map")
+        with st.expander("ℹ️ Information", expanded=False):
+            st.write("**Interpretación del mapa de tiros:**")
+            st.write("- 🟢 Verde: Gol")
+            st.write("- 🟠 Naranja: Tiro atajado o al poste")
+            st.write("- 🔴 Rojo: Tiro fallado")
+            st.write("- ⚪ Gris: Tiro bloqueado")
+        plot_shot_map(selected_player)
+
+    with tab4:
+        st.subheader("Player Impact on Team")
+        with st.expander("ℹ️ Information", expanded=False):
+            st.write("**Cómo interpretar el impacto del jugador:**")
+            st.write("- xG Generado: Goles esperados creados por el equipo con el jugador")
+            st.write("- PPDA: Presión ejercida (menor = mejor presión)")
+            st.write("- Δ positivo (verde) = Mejor que el promedio de la liga")
+            st.write("- Δ negativo (rojo) = Peor que el promedio de la liga")
+        plot_team_impact(selected_player)
+else:
+    st.info("Please select a player from the left sidebar to view their scouting report.")
+
