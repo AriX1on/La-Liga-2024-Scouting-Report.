@@ -18,27 +18,75 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Data Loading (con separador correcto ';') ---
+# --- Data Loading ---
 @st.cache_data
 def load_data():
     player_stats = pd.read_csv('file/player.csv', sep=None, engine='python')
     shots = pd.read_csv('file/shot_data.csv', sep=None, engine='python')
     team_match_stats = pd.read_csv('file/match_info.csv', sep=None, engine='python')
-    return player_stats, shots, team_match_stats
+    season = pd.read_csv('file/season.csv', sep=None, engine='python')
+    return player_stats, shots, team_match_stats, season
 
-player_stats, shots, team_match_stats = load_data()
+player_stats, shots, team_match_stats, season = load_data()
 
-# --- Convertir a numérico ---
-player_stats['goals'] = pd.to_numeric(player_stats['goals'], errors='coerce').fillna(0)
-player_stats['assists'] = pd.to_numeric(player_stats['assists'], errors='coerce').fillna(0)
-player_stats['xG'] = pd.to_numeric(player_stats['xG'], errors='coerce').fillna(0)
-player_stats['xA'] = pd.to_numeric(player_stats['xA'], errors='coerce').fillna(0)
-player_stats['shots'] = pd.to_numeric(player_stats['shots'], errors='coerce').fillna(0)
-player_stats['key_passes'] = pd.to_numeric(player_stats['key_passes'], errors='coerce').fillna(0)
-player_stats['games'] = pd.to_numeric(player_stats['games'], errors='coerce').fillna(0)
-player_stats['time'] = pd.to_numeric(player_stats['time'], errors='coerce').fillna(0)
-player_stats['yellow_cards'] = pd.to_numeric(player_stats['yellow_cards'], errors='coerce').fillna(0)
-player_stats['xGBuildup'] = pd.to_numeric(player_stats['xGBuildup'], errors='coerce').fillna(0)
+# --- FILTRO POR TEMPORADA ---
+st.sidebar.header("Season Filter")
+
+available_seasons = sorted(season['year'].unique())
+season_years = [str(y) for y in available_seasons]
+
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    min_season = st.selectbox("Min Season", options=['Any'] + season_years, index=0)
+with col2:
+    max_season = st.selectbox("Max Season", options=['Any'] + season_years, index=len(season_years))
+
+mask = pd.Series([True] * len(season))
+if min_season != 'Any':
+    mask = mask & (season['year'] >= int(min_season))
+if max_season != 'Any':
+    mask = mask & (season['year'] <= int(max_season))
+
+filtered_years = season[mask]['year'].unique().tolist()
+
+# Filtrar player_stats
+if 'season' in player_stats.columns:
+    player_stats = player_stats[player_stats['season'].isin(filtered_years)]
+elif 'year' in player_stats.columns:
+    player_stats = player_stats[player_stats['year'].isin(filtered_years)]
+
+# Filtrar shots por temporada
+if 'date' in shots.columns:
+    shots['year'] = pd.to_datetime(shots['date']).dt.year
+    shots = shots[shots['year'].isin(filtered_years)]
+
+# Filtrar team_match_stats por temporada
+if 'date' in team_match_stats.columns:
+    team_match_stats['year'] = pd.to_datetime(team_match_stats['date']).dt.year
+    team_match_stats = team_match_stats[team_match_stats['year'].isin(filtered_years)]
+
+# --- COMBINAR JUGADORES ---
+numeric_cols = ['goals', 'assists', 'xG', 'xA', 'shots', 'key_passes', 'games', 'time', 'yellow_cards', 'xGBuildup']
+
+for col in numeric_cols:
+    if col in player_stats.columns:
+        player_stats[col] = pd.to_numeric(player_stats[col], errors='coerce').fillna(0)
+
+player_stats = player_stats.groupby('player_name').agg({
+    'goals': 'sum',
+    'assists': 'sum',
+    'xG': 'sum',
+    'xA': 'sum',
+    'shots': 'sum',
+    'key_passes': 'sum',
+    'games': 'sum',
+    'time': 'sum',
+    'yellow_cards': 'sum',
+    'xGBuildup': 'sum',
+    'position': 'first',
+    'team_title': 'first',
+    'id': 'first'
+}).reset_index()
 
 # --- Calcular Threat Score ---
 player_stats['threat_score'] = (
@@ -68,7 +116,8 @@ position_avg = player_stats.groupby('position')[[
     'goals_assists_pg', 'key_passes_pg', 'xg_pg', 'xa_pg', 'shots_pg', 'xg_buildup_pg'
 ]].mean().reset_index()
 
-# --- Funciones de visualización ---
+
+# --- VISUALIZATION FUNCTIONS ---
 
 def display_basic_player_stats(player_name):
     player_data = player_stats[player_stats['player_name'] == player_name].iloc[0]
@@ -87,7 +136,42 @@ def display_basic_player_stats(player_name):
         st.metric("Minutes", int(player_data['time']))
         st.metric("Yellow Cards", int(player_data['yellow_cards']))
 
-    # --- Offensive Threat Ranking ---
+    # Team Context
+    team_matches = team_match_stats[
+        (team_match_stats['team_h'] == player_team) |
+        (team_match_stats['team_a'] == player_team)
+    ]
+
+    if not team_matches.empty:
+        team_ppda = (team_matches['h_ppda'].mean() + team_matches['a_ppda'].mean()) / 2
+        league_ppda = (team_match_stats['h_ppda'].mean() + team_match_stats['a_ppda'].mean()) / 2
+        relative_ppda = team_ppda / league_ppda if league_ppda else 1
+
+        if relative_ppda < 0.9:
+            press_text = "**High Press**: Team presses more than league average."
+            press_icon = "🟢"
+        elif relative_ppda <= 1.1:
+            press_text = "**Balanced Press**: Team presses near league average."
+            press_icon = "🟡"
+        else:
+            press_text = "**Low Block**: Team presses less than league average."
+            press_icon = "🔴"
+
+        st.subheader("Team Context")
+        st.write(f"**{player_team}** {press_icon} {press_text}")
+        st.caption(f"Team PPDA: **{team_ppda:.1f}** | League PPDA: **{league_ppda:.1f}** (lower = more pressing)")
+
+        team_goals_total = (team_matches['h_goals'].sum() + team_matches['a_goals'].sum())
+        if team_goals_total > 0 and player_data['goals'] > 0:
+            dependency = (player_data['goals'] / team_goals_total) * 100
+            if dependency > 25:
+                st.write(f"**High dependency**: Involved in **{dependency:.0f}%** of team goals.")
+            elif dependency > 15:
+                st.write(f"**Important contributor**: Involved in **{dependency:.0f}%** of team goals.")
+            else:
+                st.write(f"**Collective contribution**: Involved in **{dependency:.0f}%** of team goals.")
+
+    # Offensive Threat Ranking
     st.subheader("Offensive Threat Ranking")
     player_rank_data = ranking_liga[ranking_liga['player_name'] == player_name].iloc[0]
     player_rank = player_rank_data['rank']
@@ -108,7 +192,7 @@ def display_basic_player_stats(player_name):
     else:
         st.error(f"Below average ({threat_ratio:.2f}x)")
 
-    # --- Player Profile Ratios ---
+    # Player Profile Ratios
     metrics = ['goals_assists_pg', 'key_passes_pg', 'xg_pg', 'xa_pg', 'shots_pg', 'xg_buildup_pg']
     metric_names = ['Goals+Assists', 'Key passes', 'xG', 'xA', 'Shots', 'xBuildup']
 
@@ -124,6 +208,8 @@ def display_basic_player_stats(player_name):
     sorted_metrics = sorted(zip(metric_names, ratios), key=lambda x: x[1], reverse=True)
 
     st.subheader("Player Profile (vs Position Average)")
+    st.caption("Ratio > 1.0 = Better | Ratio = 1.0 = Average | Ratio < 1.0 = Worse")
+
     for name, ratio in sorted_metrics:
         if ratio >= 1.5:
             color = "🟢"
@@ -136,6 +222,7 @@ def display_basic_player_stats(player_name):
         else:
             color = "🔴"
         st.write(f"{color} **{name}**: **{ratio:.2f}x**")
+
 
 def plot_divergent_bars(selected_player):
     player_data = player_stats[player_stats['player_name'] == selected_player].iloc[0]
@@ -176,16 +263,18 @@ def plot_divergent_bars(selected_player):
     plt.tight_layout()
     st.pyplot(fig)
 
+
 def plot_shot_map(selected_player):
-    # Buscar player_id usando la columna 'id' de player_stats
-    player_id_row = player_stats[player_stats['player_name'] == selected_player]
-    if len(player_id_row) == 0:
+    player_row = player_stats[player_stats['player_name'] == selected_player]
+    if len(player_row) == 0:
         st.warning(f"No player ID for {selected_player}")
         return
-    
-    player_id = player_id_row['id'].values[0]
 
-    # Filtrar disparos del jugador
+    player_id = player_row['id'].values[0] if 'id' in player_row.columns else None
+    if player_id is None:
+        st.warning("No ID column found in player data")
+        return
+
     player_shots = shots[shots['player_id'] == player_id].copy()
     if len(player_shots) == 0:
         st.info(f"No shots found for {selected_player}")
@@ -198,58 +287,90 @@ def plot_shot_map(selected_player):
         'Goal': 'green',
         'SavedShot': 'orange',
         'MissedShot': 'red',
-        'BlockedShot': 'gray'
+        'BlockedShot': 'gray',
+        'ShotOnPost': 'orange'
     }
 
     for _, shot in player_shots.iterrows():
         x = shot['X'] * 120
         y = (1 - shot['Y']) * 80
         result = shot['result']
-        color = color_map.get(result, 'blue')
-        pitch.scatter(x, y, s=150, c=color, edgecolor='black', alpha=0.8, ax=ax)
+        color = color_map.get(result, None)
+        if color:
+            pitch.scatter(x, y, s=150, c=color, edgecolor='black', alpha=0.8, ax=ax)
 
     ax.set_title(f'{selected_player} - Shot Map ({len(player_shots)} shots)')
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='green', edgecolor='black', label='Goal'),
+        Patch(facecolor='orange', edgecolor='black', label='Saved'),
+        Patch(facecolor='red', edgecolor='black', label='Missed'),
+        Patch(facecolor='gray', edgecolor='black', label='Blocked')
+    ]
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=10)
     st.pyplot(fig)
 
+
 def plot_team_impact(selected_player):
-    player_team_row = player_stats[player_stats['player_name'] == selected_player]['team_title']
-    if len(player_team_row) == 0:
+    player_team = player_stats[player_stats['player_name'] == selected_player]['team_title'].values
+    if len(player_team) == 0:
         st.warning(f"No team for {selected_player}")
         return
-    player_team = player_team_row.values[0]
-
-    team_matches = team_match_stats[
-        (team_match_stats['team_h'] == player_team) |
-        (team_match_stats['team_a'] == player_team)
-    ]
-
+    player_team = player_team[0]
+    
+    if 'date' in team_match_stats.columns and 'year' not in team_match_stats.columns:
+        team_match_stats['year'] = pd.to_datetime(team_match_stats['date'], errors='coerce').dt.year
+    
+    min_year = int(min_season) if min_season != 'Any' else None
+    max_year = int(max_season) if max_season != 'Any' else None
+    
+    team_stats = team_match_stats.copy()
+    if 'year' in team_stats.columns:
+        if min_year: team_stats = team_stats[team_stats['year'] >= min_year]
+        if max_year: team_stats = team_stats[team_stats['year'] <= max_year]
+    
+    team_matches = team_stats[(team_stats['team_h'] == player_team) | (team_stats['team_a'] == player_team)]
     if team_matches.empty:
-        st.info(f"No matches for {player_team}")
+        st.info(f"No matches found for {player_team}")
         return
-
-    # Calcular promedios
-    team_xg = (team_matches['h_xg'].mean() + team_matches['a_xg'].mean())
+    
+    team_xg = team_matches['h_xg'].mean() + team_matches['a_xg'].mean()
     team_ppda = (team_matches['h_ppda'].mean() + team_matches['a_ppda'].mean()) / 2
-    league_xg = (team_match_stats['h_xg'].mean() + team_match_stats['a_xg'].mean()) / 2
-    league_ppda = (team_match_stats['h_ppda'].mean() + team_match_stats['a_ppda'].mean()) / 2
-
+    league_xg = (team_stats['h_xg'].mean() + team_stats['a_xg'].mean()) / 2
+    league_ppda = (team_stats['h_ppda'].mean() + team_stats['a_ppda'].mean()) / 2
+    
     xg_diff = team_xg - league_xg
     ppda_diff = league_ppda - team_ppda
-
+    
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-
-    # xG
-    ax1.barh(['League Avg', 'Team Avg'], [league_xg, team_xg], color=['gray', 'green' if xg_diff > 0 else 'red'])
-    ax1.axvline(x=league_xg, color='gray', linestyle='--')
-    ax1.set_xlabel('xG per game')
-    ax1.set_title(f'xG Generated: {player_team}')
-
-    # PPDA
-    ax2.barh(['League Avg', 'Team Avg'], [league_ppda, team_ppda], color=['gray', 'green' if team_ppda < league_ppda else 'red'])
-    ax2.axvline(x=league_ppda, color='gray', linestyle='--')
-    ax2.set_xlabel('PPDA (lower = better)')
-    ax2.set_title(f'Pressing: {player_team}')
-
+    
+    bars1 = ax1.barh(['Promedio Liga', 'Promedio Equipo'], [league_xg, team_xg],
+                     color=['gray', 'green' if xg_diff > 0 else 'red'], edgecolor='black', linewidth=1.5)
+    ax1.axvline(x=league_xg, color='gray', linestyle='--', alpha=0.5)
+    ax1.set_xlabel('xG Generado por partido')
+    ax1.set_title(f'Impacto en xG Generado: {player_team}')
+    for bar, val in zip(bars1, [league_xg, team_xg]):
+        ax1.text(val + 0.05, bar.get_y() + bar.get_height()/2, f'{val:.2f}', ha='left', va='center', fontweight='bold')
+    ax1.text(max([league_xg, team_xg]) * 0.7, 0.5, f'Δ = {xg_diff:+.2f}',
+             ha='center', va='center', fontsize=12, fontweight='bold',
+             color='green' if xg_diff > 0 else 'red',
+             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    bars2 = ax2.barh(['Promedio Liga', 'Promedio Equipo'], [league_ppda, team_ppda],
+                     color=['gray', 'green' if team_ppda < league_ppda else 'red'], edgecolor='black', linewidth=1.5)
+    ax2.axvline(x=league_ppda, color='gray', linestyle='--', alpha=0.5)
+    ax2.set_xlabel('PPDA (presión: menor = mejor)')
+    ax2.set_title(f'Impacto en la Presión: {player_team}')
+    for bar, val in zip(bars2, [league_ppda, team_ppda]):
+        ax2.text(val + 0.5, bar.get_y() + bar.get_height()/2, f'{val:.1f}', ha='left', va='center', fontweight='bold')
+    ax2.text(max([league_ppda, team_ppda]) * 0.7, 0.5, f'Δ = {team_ppda - league_ppda:+.1f}',
+             ha='center', va='center', fontsize=12, fontweight='bold',
+             color='green' if team_ppda < league_ppda else 'red',
+             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    fig.text(0.5, 0.00, 'Verde = Mejor que el promedio de la liga | Rojo = Peor que el promedio de la liga',
+            ha='center', fontsize=10, style='italic')
+    
     plt.tight_layout()
     st.pyplot(fig)
 
@@ -263,7 +384,8 @@ if sort_option == 'Alphabetical':
 else:
     player_list = ranking_liga['player_name'].tolist()
 
-selected_player = st.sidebar.selectbox("Select a Player:", player_list)
+selected_player = st.sidebar.selectbox("Select a Player:", player_list, index=0 if player_list else None)
+
 
 # --- Main Content ---
 if selected_player:
@@ -272,12 +394,39 @@ if selected_player:
     tab1, tab2, tab3, tab4 = st.tabs(["Full Report", "Performance Profile", "Shot Map", "Team Impact"])
 
     with tab1:
+        with st.expander("ℹ️ Information", expanded=False):
+            st.write("**Instructions for this report:**")
+            st.write("- This report shows basic stats, threat ranking, and player profile")
+            st.write("- Ratios compare the player to position average (1.0x = average)")
         display_basic_player_stats(selected_player)
+
     with tab2:
+        st.subheader("Performance Profile (vs Position Average)")
+        with st.expander("ℹ️ Information", expanded=False):
+            st.write("**How to interpret this chart:**")
+            st.write("- Green bars (right) = Better than position average")
+            st.write("- Red bars (left) = Worse than position average")
+            st.write("- Vertical line at 0 = Position average (1.0x)")
         plot_divergent_bars(selected_player)
+
     with tab3:
+        st.subheader("Shot Map")
+        with st.expander("ℹ️ Information", expanded=False):
+            st.write("**Shot colors:**")
+            st.write("- 🟢 Green: Goal")
+            st.write("- 🟠 Orange: Saved")
+            st.write("- 🔴 Red: Missed")
+            st.write("- ⚪ Gray: Blocked")
         plot_shot_map(selected_player)
+
     with tab4:
+        st.subheader("Player Impact on Team")
+        with st.expander("ℹ️ Information", expanded=False):
+            st.write("**How to interpret:**")
+            st.write("- xG: Expected goals created by team with the player")
+            st.write("- PPDA: Pressing intensity (lower = better)")
+            st.write("- Green = Better than league average")
+            st.write("- Red = Worse than league average")
         plot_team_impact(selected_player)
 else:
     st.info("Select a player from the left sidebar")
