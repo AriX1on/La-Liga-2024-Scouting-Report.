@@ -315,10 +315,11 @@ def plot_player_impact_estimate(selected_player):
     player_data = player_stats[player_stats['player_name'] == selected_player].iloc[0]
     player_team = player_data['team_title']
     player_minutes = player_data['time']
+    player_games = player_data['games']
     
     # --- CÁLCULOS ---
     total_minutes_season = 38 * 90
-    minutes_pct = min((player_minutes / total_minutes_season) * 100, 100)
+    minutes_pct = min((player_minutes / total_minutes_season), 1.0)  # Valor entre 0 y 1
     
     # Filtrar datos del equipo por temporada
     if 'date' in team_match_stats.columns and 'year' not in team_match_stats.columns:
@@ -337,92 +338,75 @@ def plot_player_impact_estimate(selected_player):
         st.info(f"No matches found for {player_team}")
         return
     
+    # Valores reales del equipo
     team_xg = team_matches['h_xg'].mean() + team_matches['a_xg'].mean()
     team_ppda = (team_matches['h_ppda'].mean() + team_matches['a_ppda'].mean()) / 2
     
-    # Estimación de contribución (proporcional a minutos)
-    estimated_xg_contribution = team_xg * (minutes_pct / 100)
-    estimated_ppda_contribution = team_ppda * (minutes_pct / 100)
+    # Estimación del jugador (proporcional a sus minutos)
+    estimated_xg = team_xg * minutes_pct
+    estimated_ppda = team_ppda * minutes_pct
     
     # -----------------------------------------------------------------
-    # Crear gráfico de barras
+    # GRÁFICO 1: xG
     # -----------------------------------------------------------------
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
     
-    # Gráfico 1: Porcentaje de minutos vs contribución estimada
-    categories = ['Minutos\njugados', 'xG estimado', 'Presión estimada']
-    values = [minutes_pct, 
-              estimated_xg_contribution / team_xg * 100 if team_xg > 0 else 0,
-              estimated_ppda_contribution / team_ppda * 100 if team_ppda > 0 else 0]
+    # Datos para xG
+    categories_xg = [f'{player_team} (equipo)', f'{selected_player} (estimado)']
+    values_xg = [team_xg, estimated_xg]
+    colors_xg = ['#3498db', '#2ecc71']
     
-    bars1 = ax1.bar(categories, values, color='steelblue', edgecolor='black', linewidth=1.5)
-    ax1.axhline(y=minutes_pct, color='red', linestyle='--', alpha=0.7, linewidth=2)
-    ax1.set_ylabel('Porcentaje (%)')
-    ax1.set_title(f'{selected_player} - Contribución Estimada')
-    ax1.set_ylim(0, 100)
+    bars1 = ax1.barh(categories_xg, values_xg, color=colors_xg, edgecolor='black', linewidth=1.5, height=0.5)
+    ax1.set_xlabel('xG por partido')
+    ax1.set_title(f'Impacto Estimado en xG - {selected_player}')
     
-    for bar, val in zip(bars1, values):
-        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, f'{val:.1f}%', 
-                ha='center', va='bottom', fontweight='bold')
+    # Añadir valores
+    for bar, val in zip(bars1, values_xg):
+        ax1.text(bar.get_width() + 0.03, bar.get_y() + bar.get_height()/2, f'{val:.2f}', 
+                va='center', fontweight='bold')
     
-    # Gráfico 2: Comparación con jugador promedio (11 jugadores)
-    avg_player_pct = 100 / 11
-    categories2 = ['Jugador\npromedio', selected_player[:20]]
-    values2 = [avg_player_pct, minutes_pct]
-    colors2 = ['gray', 'steelblue']
+    # Añadir nota del porcentaje de minutos
+    ax1.text(0.5, -0.15, f'Basado en {minutes_pct*100:.1f}% de minutos jugados', 
+             transform=ax1.transAxes, ha='center', fontsize=10, style='italic')
     
-    bars2 = ax2.bar(categories2, values2, color=colors2, edgecolor='black', linewidth=1.5)
-    ax2.set_ylabel('Porcentaje de minutos (%)')
-    ax2.set_title(f'{selected_player} vs Jugador Promedio')
-    ax2.set_ylim(0, 100)
+    # -----------------------------------------------------------------
+    # GRÁFICO 2: PPDA
+    # -----------------------------------------------------------------
+    categories_ppda = [f'{player_team} (equipo)', f'{selected_player} (estimado)']
+    values_ppda = [team_ppda, estimated_ppda]
+    colors_ppda = ['#3498db', '#2ecc71']
     
-    for bar, val in zip(bars2, values2):
-        ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, f'{val:.1f}%', 
-                ha='center', va='bottom', fontweight='bold')
+    bars2 = ax2.barh(categories_ppda, values_ppda, color=colors_ppda, edgecolor='black', linewidth=1.5, height=0.5)
+    ax2.set_xlabel('PPDA (menor = mejor presión)')
+    ax2.set_title(f'Impacto Estimado en Presión - {selected_player}')
+    
+    for bar, val in zip(bars2, values_ppda):
+        ax2.text(bar.get_width() + 0.03, bar.get_y() + bar.get_height()/2, f'{val:.1f}', 
+                va='center', fontweight='bold')
+    
+    ax2.text(0.5, -0.15, f'Basado en {minutes_pct*100:.1f}% de minutos jugados', 
+             transform=ax2.transAxes, ha='center', fontsize=10, style='italic')
     
     plt.tight_layout()
     st.pyplot(fig)
     
-    # --- ESTIMACIÓN DEL JUGADOR ---
-    st.subheader(f"📊 Estimación del impacto de {selected_player}")
+    # --- MÉTRICAS NUMÉRICAS ---
+    st.subheader(f"📊 Resumen - {selected_player}")
     
-    # Advertencia clara
-    st.info("⚠️ **Estimación aproximada** - Basada en minutos jugados. Para un análisis preciso se necesitarían datos de alineaciones por partido.")
-    
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Minutos jugados", f"{player_minutes} min")
-        st.metric("% de minutos disponible", f"{minutes_percentage*100:.1f}%")
+        st.metric("Minutos jugados", f"{player_minutes:,}")
         st.metric("Partidos jugados", f"{player_games}")
+        st.metric("% minutos disponible", f"{minutes_pct*100:.1f}%")
     
     with col2:
-        st.metric("xG estimado atribuible", f"{estimated_player_xg_impact:.2f} por partido")
-        st.metric("Contribución a presión (estimada)", f"{estimated_player_ppda_impact:.1f}")
-        if estimated_above_avg > 0:
-            st.success(f"+{estimated_above_avg:.2f} xG más que un jugador promedio")
-        else:
-            st.error(f"{estimated_above_avg:.2f} xG menos que un jugador promedio")
+        st.metric("xG del equipo", f"{team_xg:.2f} por partido")
+        st.metric("xG estimado del jugador", f"{estimated_xg:.2f} por partido")
     
-    # Interpretación cualitativa
-    st.subheader("📝 Interpretación")
-    if minutes_percentage > 70:
-        st.write(f"🔹 **Jugador clave** - Participa en más del 70% de los minutos")
-    elif minutes_percentage > 40:
-        st.write(f"🔹 **Jugador importante** - Participa entre 40-70% de los minutos")
-    else:
-        st.write(f"🔹 **Jugador rotacional** - Participa en menos del 40% de los minutos")
-    
-    if team_xg > league_xg:
-        st.write(f"🔹 {player_team} es un equipo ofensivo (supera la media en xG)")
-    else:
-        st.write(f"🔹 {player_team} es un equipo defensivo (por debajo de la media en xG)")
-    
-    if team_ppda < league_ppda:
-        st.write(f"🔹 {player_team} presiona arriba (más intenso que la media)")
-    else:
-        st.write(f"🔹 {player_team} espera en bloque bajo (presión menos intensa)")
-
-
+    with col3:
+        st.metric("PPDA del equipo", f"{team_ppda:.1f}")
+        st.metric("PPDA estimado del jugador", f"{estimated_ppda:.1f}")
+        
 # --- Sidebar ---
 st.sidebar.header("Player Selection")
 sort_option = st.sidebar.radio("Sort Players By:", ('Alphabetical', 'By Threat Rank'))
