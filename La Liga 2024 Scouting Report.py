@@ -311,13 +311,18 @@ def plot_shot_map(selected_player):
     st.pyplot(fig)
 
 
-def plot_team_impact(selected_player):
-    player_team = player_stats[player_stats['player_name'] == selected_player]['team_title'].values
-    if len(player_team) == 0:
-        st.warning(f"No team for {selected_player}")
-        return
-    player_team = player_team[0]
+def plot_player_impact_estimate(selected_player):
+    player_data = player_stats[player_stats['player_name'] == selected_player].iloc[0]
+    player_team = player_data['team_title']
+    player_minutes = player_data['time']
+    player_games = player_data['games']
     
+    # --- ESTIMACIÓN ---
+    # Asumir temporada de 38 partidos x 90 min = 3420 minutos
+    total_minutes_season = 38 * 90
+    minutes_percentage = player_minutes / total_minutes_season if total_minutes_season > 0 else 0
+    
+    # Filtrar datos del equipo por temporada
     if 'date' in team_match_stats.columns and 'year' not in team_match_stats.columns:
         team_match_stats['year'] = pd.to_datetime(team_match_stats['date'], errors='coerce').dt.year
     
@@ -339,40 +344,71 @@ def plot_team_impact(selected_player):
     league_xg = (team_stats['h_xg'].mean() + team_stats['a_xg'].mean()) / 2
     league_ppda = (team_stats['h_ppda'].mean() + team_stats['a_ppda'].mean()) / 2
     
-    xg_diff = team_xg - league_xg
-    ppda_diff = league_ppda - team_ppda
+    # Estimación del impacto del jugador (ponderado por minutos)
+    estimated_player_xg_impact = team_xg * minutes_percentage
+    estimated_player_ppda_impact = team_ppda * minutes_percentage
+    
+    # Diferencia vs un jugador promedio (11 jugadores en el campo)
+    avg_player_impact = team_xg / 11
+    estimated_above_avg = estimated_player_xg_impact - avg_player_impact
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
     
-    bars1 = ax1.barh(['Promedio Liga', 'Promedio Equipo'], [league_xg, team_xg],
-                     color=['gray', 'green' if xg_diff > 0 else 'red'], edgecolor='black', linewidth=1.5)
+    # xG
+    ax1.barh(['Liga (promedio)', f'{player_team}'], [league_xg, team_xg],
+             color=['gray', 'steelblue'], edgecolor='black', linewidth=1.5)
     ax1.axvline(x=league_xg, color='gray', linestyle='--', alpha=0.5)
-    ax1.set_xlabel('xG Generado por partido')
-    ax1.set_title(f'Impacto en xG Generado: {player_team}')
-    for bar, val in zip(bars1, [league_xg, team_xg]):
-        ax1.text(val + 0.05, bar.get_y() + bar.get_height()/2, f'{val:.2f}', ha='left', va='center', fontweight='bold')
-    ax1.text(max([league_xg, team_xg]) * 0.7, 0.5, f'Δ = {xg_diff:+.2f}',
-             ha='center', va='center', fontsize=12, fontweight='bold',
-             color='green' if xg_diff > 0 else 'red',
-             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    ax1.set_xlabel('xG por partido')
+    ax1.set_title(f'{player_team} - Creación de peligro')
     
-    bars2 = ax2.barh(['Promedio Liga', 'Promedio Equipo'], [league_ppda, team_ppda],
-                     color=['gray', 'green' if team_ppda < league_ppda else 'red'], edgecolor='black', linewidth=1.5)
+    # PPDA
+    ax2.barh(['Liga (promedio)', f'{player_team}'], [league_ppda, team_ppda],
+             color=['gray', 'steelblue'], edgecolor='black', linewidth=1.5)
     ax2.axvline(x=league_ppda, color='gray', linestyle='--', alpha=0.5)
-    ax2.set_xlabel('PPDA (presión: menor = mejor)')
-    ax2.set_title(f'Impacto en la Presión: {player_team}')
-    for bar, val in zip(bars2, [league_ppda, team_ppda]):
-        ax2.text(val + 0.5, bar.get_y() + bar.get_height()/2, f'{val:.1f}', ha='left', va='center', fontweight='bold')
-    ax2.text(max([league_ppda, team_ppda]) * 0.7, 0.5, f'Δ = {team_ppda - league_ppda:+.1f}',
-             ha='center', va='center', fontsize=12, fontweight='bold',
-             color='green' if team_ppda < league_ppda else 'red',
-             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-    
-    fig.text(0.5, 0.00, 'Verde = Mejor que el promedio de la liga | Rojo = Peor que el promedio de la liga',
-            ha='center', fontsize=10, style='italic')
+    ax2.set_xlabel('PPDA (menor = más presión)')
+    ax2.set_title(f'{player_team} - Intensidad de presión')
     
     plt.tight_layout()
     st.pyplot(fig)
+    
+    # --- ESTIMACIÓN DEL JUGADOR ---
+    st.subheader(f"📊 Estimación del impacto de {selected_player}")
+    
+    # Advertencia clara
+    st.info("⚠️ **Estimación aproximada** - Basada en minutos jugados. Para un análisis preciso se necesitarían datos de alineaciones por partido.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Minutos jugados", f"{player_minutes} min")
+        st.metric("% de minutos disponible", f"{minutes_percentage*100:.1f}%")
+        st.metric("Partidos jugados", f"{player_games}")
+    
+    with col2:
+        st.metric("xG estimado atribuible", f"{estimated_player_xg_impact:.2f} por partido")
+        st.metric("Contribución a presión (estimada)", f"{estimated_player_ppda_impact:.1f}")
+        if estimated_above_avg > 0:
+            st.success(f"+{estimated_above_avg:.2f} xG más que un jugador promedio")
+        else:
+            st.error(f"{estimated_above_avg:.2f} xG menos que un jugador promedio")
+    
+    # Interpretación cualitativa
+    st.subheader("📝 Interpretación")
+    if minutes_percentage > 70:
+        st.write(f"🔹 **Jugador clave** - Participa en más del 70% de los minutos")
+    elif minutes_percentage > 40:
+        st.write(f"🔹 **Jugador importante** - Participa entre 40-70% de los minutos")
+    else:
+        st.write(f"🔹 **Jugador rotacional** - Participa en menos del 40% de los minutos")
+    
+    if team_xg > league_xg:
+        st.write(f"🔹 {player_team} es un equipo ofensivo (supera la media en xG)")
+    else:
+        st.write(f"🔹 {player_team} es un equipo defensivo (por debajo de la media en xG)")
+    
+    if team_ppda < league_ppda:
+        st.write(f"🔹 {player_team} presiona arriba (más intenso que la media)")
+    else:
+        st.write(f"🔹 {player_team} espera en bloque bajo (presión menos intensa)")
 
 
 # --- Sidebar ---
@@ -391,7 +427,7 @@ selected_player = st.sidebar.selectbox("Select a Player:", player_list, index=0 
 if selected_player:
     st.header(f"Scouting Report for {selected_player}")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["Full Report", "Performance Profile", "Shot Map", "Team Impact"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Full Report", "Performance Profile", "Shot Map", "Impact Estimate"])
 
     with tab1:
         with st.expander("ℹ️ Information", expanded=False):
@@ -422,11 +458,9 @@ if selected_player:
     with tab4:
         st.subheader("Player Impact on Team")
         with st.expander("ℹ️ Information", expanded=False):
-            st.write("**How to interpret:**")
-            st.write("- xG: Expected goals created by team with the player")
-            st.write("- PPDA: Pressing intensity (lower = better)")
-            st.write("- Green = Better than league average")
-            st.write("- Red = Worse than league average")
-        plot_team_impact(selected_player)
+            st.write("**⚠️ This is an ESTIMATE based on minutes played.**")
+            st.write("- xG attribution = Team xG × (player minutes / total possible minutes)")
+            st.write("- For precise analysis, lineup data per match would be needed")
+        plot_player_impact_estimate(selected_player)
 else:
     st.info("Select a player from the left sidebar")
