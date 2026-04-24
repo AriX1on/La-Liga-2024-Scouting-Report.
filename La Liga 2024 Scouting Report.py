@@ -18,20 +18,15 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Data Loading ---
+# --- Data Loading (con separador correcto ';') ---
 @st.cache_data
 def load_data():
-    player_stats = pd.read_csv('file/player.csv')
-    shots = pd.read_csv('file/shot_data.csv')
+    player_stats = pd.read_csv('file/player.csv', sep=';')
+    shots = pd.read_csv('file/shot_data.csv', sep=';')
     team_match_stats = pd.read_csv('file/match_info.csv', sep=';')
     return player_stats, shots, team_match_stats
 
 player_stats, shots, team_match_stats = load_data()
-
-# --- Usar los nombres de columna ORIGINALES ---
-# player_stats tiene: player_name, team_title, games, time, xG, xA, xGBuildup
-# shots tiene: X, Y, player_id, xG, result
-# team_match_stats tiene: team_h, team_a, h_xg, a_xg, h_ppda, a_ppda, h_goals, a_goals
 
 # --- Convertir a numérico ---
 player_stats['goals'] = pd.to_numeric(player_stats['goals'], errors='coerce').fillna(0)
@@ -45,7 +40,7 @@ player_stats['time'] = pd.to_numeric(player_stats['time'], errors='coerce').fill
 player_stats['yellow_cards'] = pd.to_numeric(player_stats['yellow_cards'], errors='coerce').fillna(0)
 player_stats['xGBuildup'] = pd.to_numeric(player_stats['xGBuildup'], errors='coerce').fillna(0)
 
-# --- Calcular Threat Score (usando nombres originales) ---
+# --- Calcular Threat Score ---
 player_stats['threat_score'] = (
     player_stats['goals'] * 1.0 +
     player_stats['assists'] * 0.8 +
@@ -58,7 +53,7 @@ player_stats['threat_score'] = (
 ranking_liga = player_stats.sort_values('threat_score', ascending=False).copy()
 ranking_liga['rank'] = range(1, len(ranking_liga) + 1)
 
-# --- Per game metrics (usando nombres originales) ---
+# --- Per game metrics ---
 player_stats['goals_assists_pg'] = (player_stats['goals'] + player_stats['assists']) / player_stats['games'].replace(0, np.nan)
 player_stats['key_passes_pg'] = player_stats['key_passes'] / player_stats['games'].replace(0, np.nan)
 player_stats['xg_pg'] = player_stats['xG'] / player_stats['games'].replace(0, np.nan)
@@ -182,12 +177,15 @@ def plot_divergent_bars(selected_player):
     st.pyplot(fig)
 
 def plot_shot_map(selected_player):
-    player_id = player_stats[player_stats['player_name'] == selected_player]['id'].values
-    if len(player_id) == 0:
+    # Buscar player_id usando la columna 'id' de player_stats
+    player_id_row = player_stats[player_stats['player_name'] == selected_player]
+    if len(player_id_row) == 0:
         st.warning(f"No player ID for {selected_player}")
         return
-    player_id = player_id[0]
+    
+    player_id = player_id_row['id'].values[0]
 
+    # Filtrar disparos del jugador
     player_shots = shots[shots['player_id'] == player_id].copy()
     if len(player_shots) == 0:
         st.info(f"No shots found for {selected_player}")
@@ -214,11 +212,11 @@ def plot_shot_map(selected_player):
     st.pyplot(fig)
 
 def plot_team_impact(selected_player):
-    player_team = player_stats[player_stats['player_name'] == selected_player]['team_title'].values
-    if len(player_team) == 0:
+    player_team_row = player_stats[player_stats['player_name'] == selected_player]['team_title']
+    if len(player_team_row) == 0:
         st.warning(f"No team for {selected_player}")
         return
-    player_team = player_team[0]
+    player_team = player_team_row.values[0]
 
     team_matches = team_match_stats[
         (team_match_stats['team_h'] == player_team) |
