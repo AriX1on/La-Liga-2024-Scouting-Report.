@@ -21,10 +21,8 @@ st.markdown("""
 # --- Data Loading from CSV files ---
 @st.cache_data
 def load_data():
-    match_data = pd.read_csv('file/match_data.csv')
     team_match_stats = pd.read_csv('file/match_info.csv')
     player_stats = pd.read_csv('file/player.csv')
-    season = pd.read_csv('season.csv')
     shots = pd.read_csv('file/shot_data.csv')
     return shots, team_match_stats, player_stats, match_data, season
 
