@@ -22,13 +22,14 @@ st.markdown("""
 
 # --- Data Loading Functions (cached for performance) ---
 @st.cache_data
-def load_understat_data():
-    understat = sd.Understat(leagues="ESP-La Liga", seasons=2024)
-    shots = understat.read_shot_events()
-    team_match_stats = understat.read_team_match_stats()
-    player_stats = understat.read_player_season_stats()
-    player_stats = player_stats.reset_index()
-    return shots, team_match_stats, player_stats
+def load_data():
+    player_stats = pd.read_csv('file/player.csv')
+    ranking_liga = ranking_liga()
+    shots = pd.read_csv('file/shot_data.csv')
+    team_match_stats = pd.read_csv('file/match_info.csv')
+    return shots, team_match_stats, player_stats, ranking_liga
+
+shots, team_match_stats, player_stats, ranking_liga = load_data()
 
 shots, team_match_stats, player_stats = load_understat_data()
 
