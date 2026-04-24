@@ -315,12 +315,10 @@ def plot_player_impact_estimate(selected_player):
     player_data = player_stats[player_stats['player_name'] == selected_player].iloc[0]
     player_team = player_data['team_title']
     player_minutes = player_data['time']
-    player_games = player_data['games']
     
-    # --- ESTIMACIÓN ---
-    # Asumir temporada de 38 partidos x 90 min = 3420 minutos
+    # --- CÁLCULOS ---
     total_minutes_season = 38 * 90
-    minutes_percentage = player_minutes / total_minutes_season if total_minutes_season > 0 else 0
+    minutes_pct = min((player_minutes / total_minutes_season) * 100, 100)
     
     # Filtrar datos del equipo por temporada
     if 'date' in team_match_stats.columns and 'year' not in team_match_stats.columns:
@@ -341,32 +339,46 @@ def plot_player_impact_estimate(selected_player):
     
     team_xg = team_matches['h_xg'].mean() + team_matches['a_xg'].mean()
     team_ppda = (team_matches['h_ppda'].mean() + team_matches['a_ppda'].mean()) / 2
-    league_xg = (team_stats['h_xg'].mean() + team_stats['a_xg'].mean()) / 2
-    league_ppda = (team_stats['h_ppda'].mean() + team_stats['a_ppda'].mean()) / 2
     
-    # Estimación del impacto del jugador (ponderado por minutos)
-    estimated_player_xg_impact = team_xg * minutes_percentage
-    estimated_player_ppda_impact = team_ppda * minutes_percentage
+    # Estimación de contribución (proporcional a minutos)
+    estimated_xg_contribution = team_xg * (minutes_pct / 100)
+    estimated_ppda_contribution = team_ppda * (minutes_pct / 100)
     
-    # Diferencia vs un jugador promedio (11 jugadores en el campo)
-    avg_player_impact = team_xg / 11
-    estimated_above_avg = estimated_player_xg_impact - avg_player_impact
-    
+    # -----------------------------------------------------------------
+    # Crear gráfico de barras
+    # -----------------------------------------------------------------
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
     
-    # xG
-    ax1.barh(['Liga (promedio)', f'{player_team}'], [league_xg, team_xg],
-             color=['gray', 'steelblue'], edgecolor='black', linewidth=1.5)
-    ax1.axvline(x=league_xg, color='gray', linestyle='--', alpha=0.5)
-    ax1.set_xlabel('xG por partido')
-    ax1.set_title(f'{player_team} - Creación de peligro')
+    # Gráfico 1: Porcentaje de minutos vs contribución estimada
+    categories = ['Minutos\njugados', 'xG estimado', 'Presión estimada']
+    values = [minutes_pct, 
+              estimated_xg_contribution / team_xg * 100 if team_xg > 0 else 0,
+              estimated_ppda_contribution / team_ppda * 100 if team_ppda > 0 else 0]
     
-    # PPDA
-    ax2.barh(['Liga (promedio)', f'{player_team}'], [league_ppda, team_ppda],
-             color=['gray', 'steelblue'], edgecolor='black', linewidth=1.5)
-    ax2.axvline(x=league_ppda, color='gray', linestyle='--', alpha=0.5)
-    ax2.set_xlabel('PPDA (menor = más presión)')
-    ax2.set_title(f'{player_team} - Intensidad de presión')
+    bars1 = ax1.bar(categories, values, color='steelblue', edgecolor='black', linewidth=1.5)
+    ax1.axhline(y=minutes_pct, color='red', linestyle='--', alpha=0.7, linewidth=2)
+    ax1.set_ylabel('Porcentaje (%)')
+    ax1.set_title(f'{selected_player} - Contribución Estimada')
+    ax1.set_ylim(0, 100)
+    
+    for bar, val in zip(bars1, values):
+        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, f'{val:.1f}%', 
+                ha='center', va='bottom', fontweight='bold')
+    
+    # Gráfico 2: Comparación con jugador promedio (11 jugadores)
+    avg_player_pct = 100 / 11
+    categories2 = ['Jugador\npromedio', selected_player[:20]]
+    values2 = [avg_player_pct, minutes_pct]
+    colors2 = ['gray', 'steelblue']
+    
+    bars2 = ax2.bar(categories2, values2, color=colors2, edgecolor='black', linewidth=1.5)
+    ax2.set_ylabel('Porcentaje de minutos (%)')
+    ax2.set_title(f'{selected_player} vs Jugador Promedio')
+    ax2.set_ylim(0, 100)
+    
+    for bar, val in zip(bars2, values2):
+        ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, f'{val:.1f}%', 
+                ha='center', va='bottom', fontweight='bold')
     
     plt.tight_layout()
     st.pyplot(fig)
