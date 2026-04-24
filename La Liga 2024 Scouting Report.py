@@ -21,9 +21,9 @@ st.markdown("""
 # --- Data Loading (con separador correcto ';') ---
 @st.cache_data
 def load_data():
-    player_stats = pd.read_csv('file/player.csv', sep=';')
-    shots = pd.read_csv('file/shot_data.csv', sep=';')
-    team_match_stats = pd.read_csv('file/match_info.csv', sep=';')
+    player_stats = pd.read_csv('file/player.csv', sep=None, engine='python')
+    shots = pd.read_csv('file/shot_data.csv', sep=None, engine='python')
+    team_match_stats = pd.read_csv('file/match_info.csv', sep=None, engine='python')
     return player_stats, shots, team_match_stats
 
 player_stats, shots, team_match_stats = load_data()
