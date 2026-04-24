@@ -24,7 +24,7 @@ def load_data():
     team_match_stats = pd.read_csv('file/match_info.csv')
     player_stats = pd.read_csv('file/player.csv')
     shots = pd.read_csv('file/shot_data.csv')
-    return shots, team_match_stats, player_stats, match_data, season
+    return shots, team_match_stats, player_stats
 
 shots, team_match_stats, player_stats = load_data()
 
