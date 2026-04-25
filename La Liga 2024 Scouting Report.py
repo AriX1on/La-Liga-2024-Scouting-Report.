@@ -317,9 +317,13 @@ def plot_player_impact_estimate(selected_player):
     player_minutes = player_data['time']
     player_games = player_data['games']
     
-    # --- CÁLCULOS ---
-    total_minutes_season = 38 * 90
-    minutes_pct = min((player_minutes / total_minutes_season), 1.0)  # Valor entre 0 y 1
+    # --- Obtener el máximo de minutos del equipo en el período ---
+    team_players = player_stats[player_stats['team_title'] == player_team]
+    max_team_minutes = team_players['time'].max()
+    
+    # Porcentaje de minutos (vs el que más jugó en el equipo)
+    minutes_pct = player_minutes / max_team_minutes if max_team_minutes > 0 else 0
+    minutes_pct = min(minutes_pct, 1.0)
     
     # Filtrar datos del equipo por temporada
     if 'date' in team_match_stats.columns and 'year' not in team_match_stats.columns:
@@ -351,7 +355,6 @@ def plot_player_impact_estimate(selected_player):
     # -----------------------------------------------------------------
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
     
-    # Datos para xG
     categories_xg = [f'{player_team} (equipo)', f'{selected_player} (estimado)']
     values_xg = [team_xg, estimated_xg]
     colors_xg = ['#3498db', '#2ecc71']
@@ -360,13 +363,11 @@ def plot_player_impact_estimate(selected_player):
     ax1.set_xlabel('xG por partido')
     ax1.set_title(f'Impacto Estimado en xG - {selected_player}')
     
-    # Añadir valores
     for bar, val in zip(bars1, values_xg):
         ax1.text(bar.get_width() + 0.03, bar.get_y() + bar.get_height()/2, f'{val:.2f}', 
                 va='center', fontweight='bold')
     
-    # Añadir nota del porcentaje de minutos
-    ax1.text(0.5, -0.15, f'Basado en {minutes_pct*100:.1f}% de minutos jugados', 
+    ax1.text(0.5, -0.15, f'Basado en {minutes_pct*100:.1f}% de minutos del equipo', 
              transform=ax1.transAxes, ha='center', fontsize=10, style='italic')
     
     # -----------------------------------------------------------------
@@ -384,7 +385,7 @@ def plot_player_impact_estimate(selected_player):
         ax2.text(bar.get_width() + 0.03, bar.get_y() + bar.get_height()/2, f'{val:.1f}', 
                 va='center', fontweight='bold')
     
-    ax2.text(0.5, -0.15, f'Basado en {minutes_pct*100:.1f}% de minutos jugados', 
+    ax2.text(0.5, -0.15, f'Basado en {minutes_pct*100:.1f}% de minutos del equipo', 
              transform=ax2.transAxes, ha='center', fontsize=10, style='italic')
     
     plt.tight_layout()
@@ -397,7 +398,7 @@ def plot_player_impact_estimate(selected_player):
     with col1:
         st.metric("Minutos jugados", f"{player_minutes:,}")
         st.metric("Partidos jugados", f"{player_games}")
-        st.metric("% minutos disponible", f"{minutes_pct*100:.1f}%")
+        st.metric("% minutos del equipo", f"{minutes_pct*100:.1f}%")
     
     with col2:
         st.metric("xG del equipo", f"{team_xg:.2f} por partido")
