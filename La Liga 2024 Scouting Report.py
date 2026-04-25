@@ -29,7 +29,7 @@ def load_data():
 
 player_stats, shots, team_match_stats, season = load_data()
 
-# --- FILTRO POR TEMPORADA ---
+# --- SEASON FILTER ---
 st.sidebar.header("Season Filter")
 
 available_seasons = sorted(season['year'].unique())
@@ -49,23 +49,23 @@ if max_season != 'Any':
 
 filtered_years = season[mask]['year'].unique().tolist()
 
-# Filtrar player_stats
+# Filter player_stats
 if 'season' in player_stats.columns:
     player_stats = player_stats[player_stats['season'].isin(filtered_years)]
 elif 'year' in player_stats.columns:
     player_stats = player_stats[player_stats['year'].isin(filtered_years)]
 
-# Filtrar shots por temporada
+# Filter shots by season
 if 'date' in shots.columns:
     shots['year'] = pd.to_datetime(shots['date']).dt.year
     shots = shots[shots['year'].isin(filtered_years)]
 
-# Filtrar team_match_stats por temporada
+# Filter team_match_stats by season
 if 'date' in team_match_stats.columns:
     team_match_stats['year'] = pd.to_datetime(team_match_stats['date']).dt.year
     team_match_stats = team_match_stats[team_match_stats['year'].isin(filtered_years)]
 
-# --- COMBINAR JUGADORES ---
+# --- MERGE PLAYERS (multiple seasons) ---
 numeric_cols = ['goals', 'assists', 'xG', 'xA', 'shots', 'key_passes', 'games', 'time', 'yellow_cards', 'xGBuildup']
 
 for col in numeric_cols:
@@ -88,7 +88,7 @@ player_stats = player_stats.groupby('player_name').agg({
     'id': 'first'
 }).reset_index()
 
-# --- Calcular Threat Score ---
+# --- Calculate Threat Score ---
 player_stats['threat_score'] = (
     player_stats['goals'] * 1.0 +
     player_stats['assists'] * 0.8 +
@@ -317,16 +317,16 @@ def plot_player_impact_estimate(selected_player):
     player_minutes = player_data['time']
     player_games = player_data['games']
     
-    # --- Obtener el máximo de minutos del equipo + 15% margen ---
+    # --- Get team's max minutes + 15% margin ---
     team_players = player_stats[player_stats['team_title'] == player_team]
     max_team_minutes = team_players['time'].max()
-    max_possible_minutes = max_team_minutes * 1.15  # +15% margen realista
+    max_possible_minutes = max_team_minutes * 1.15  # +15% realistic margin
     
-    # Porcentaje de minutos (con margen)
+    # Minutes percentage (with margin)
     minutes_pct = player_minutes / max_possible_minutes if max_possible_minutes > 0 else 0
     minutes_pct = min(minutes_pct, 1.0)
     
-    # Filtrar datos del equipo por temporada
+    # Filter team data by season
     if 'date' in team_match_stats.columns and 'year' not in team_match_stats.columns:
         team_match_stats['year'] = pd.to_datetime(team_match_stats['date'], errors='coerce').dt.year
     
@@ -343,73 +343,74 @@ def plot_player_impact_estimate(selected_player):
         st.info(f"No matches found for {player_team}")
         return
     
-    # Valores reales del equipo
+    # Team actual values
     team_xg = team_matches['h_xg'].mean() + team_matches['a_xg'].mean()
     team_ppda = (team_matches['h_ppda'].mean() + team_matches['a_ppda'].mean()) / 2
     
-    # Estimación del jugador (proporcional a sus minutos)
+    # Player estimate (proportional to minutes)
     estimated_xg = team_xg * minutes_pct
     estimated_ppda = team_ppda * minutes_pct
     
     # -----------------------------------------------------------------
-    # GRÁFICO 1: xG
+    # CHART 1: xG
     # -----------------------------------------------------------------
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
     
-    categories_xg = [f'{player_team} (equipo)', f'{selected_player} (estimado)']
+    categories_xg = [f'{player_team} (team)', f'{selected_player} (estimated)']
     values_xg = [team_xg, estimated_xg]
     colors_xg = ['#3498db', '#2ecc71']
     
     bars1 = ax1.barh(categories_xg, values_xg, color=colors_xg, edgecolor='black', linewidth=1.5, height=0.5)
-    ax1.set_xlabel('xG por partido')
-    ax1.set_title(f'Impacto Estimado en xG - {selected_player}')
+    ax1.set_xlabel('xG per game')
+    ax1.set_title(f'Estimated xG Impact - {selected_player}')
     
     for bar, val in zip(bars1, values_xg):
         ax1.text(bar.get_width() + 0.03, bar.get_y() + bar.get_height()/2, f'{val:.2f}', 
                 va='center', fontweight='bold')
     
-    ax1.text(0.5, -0.15, f'Basado en {minutes_pct*100:.1f}% de minutos (margen 15% sobre el máximo del equipo)', 
+    ax1.text(0.5, -0.15, f'Based on {minutes_pct*100:.1f}% of minutes (15% margin over team max)', 
              transform=ax1.transAxes, ha='center', fontsize=9, style='italic')
     
     # -----------------------------------------------------------------
-    # GRÁFICO 2: PPDA
+    # CHART 2: PPDA
     # -----------------------------------------------------------------
-    categories_ppda = [f'{player_team} (equipo)', f'{selected_player} (estimado)']
+    categories_ppda = [f'{player_team} (team)', f'{selected_player} (estimated)']
     values_ppda = [team_ppda, estimated_ppda]
     colors_ppda = ['#3498db', '#2ecc71']
     
     bars2 = ax2.barh(categories_ppda, values_ppda, color=colors_ppda, edgecolor='black', linewidth=1.5, height=0.5)
-    ax2.set_xlabel('PPDA (menor = mejor presión)')
-    ax2.set_title(f'Impacto Estimado en Presión - {selected_player}')
+    ax2.set_xlabel('PPDA (lower = better pressing)')
+    ax2.set_title(f'Estimated Pressing Impact - {selected_player}')
     
     for bar, val in zip(bars2, values_ppda):
         ax2.text(bar.get_width() + 0.03, bar.get_y() + bar.get_height()/2, f'{val:.1f}', 
                 va='center', fontweight='bold')
     
-    ax2.text(0.5, -0.15, f'Basado en {minutes_pct*100:.1f}% de minutos (margen 15% sobre el máximo del equipo)', 
+    ax2.text(0.5, -0.15, f'Based on {minutes_pct*100:.1f}% of minutes (15% margin over team max)', 
              transform=ax2.transAxes, ha='center', fontsize=9, style='italic')
     
     plt.tight_layout()
     st.pyplot(fig)
     
-    # --- MÉTRICAS NUMÉRICAS ---
-    st.subheader(f"📊 Resumen - {selected_player}")
+    # --- NUMERIC METRICS ---
+    st.subheader(f"📊 Summary - {selected_player}")
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Minutos jugados", f"{player_minutes:,}")
-        st.metric("Partidos jugados", f"{player_games}")
-        st.metric("Máximo del equipo", f"{max_team_minutes:,} min")
-        st.metric("% minutos (c/margen)", f"{minutes_pct*100:.1f}%")
+        st.metric("Minutes played", f"{player_minutes:,}")
+        st.metric("Games played", f"{player_games}")
+        st.metric("Team max minutes", f"{max_team_minutes:,} min")
+        st.metric("% minutes (with margin)", f"{minutes_pct*100:.1f}%")
     
     with col2:
-        st.metric("xG del equipo", f"{team_xg:.2f} por partido")
-        st.metric("xG estimado del jugador", f"{estimated_xg:.2f} por partido")
+        st.metric("Team xG", f"{team_xg:.2f} per game")
+        st.metric("Estimated player xG", f"{estimated_xg:.2f} per game")
     
     with col3:
-        st.metric("PPDA del equipo", f"{team_ppda:.1f}")
-        st.metric("PPDA estimado del jugador", f"{estimated_ppda:.1f}")
-        
+        st.metric("Team PPDA", f"{team_ppda:.1f}")
+        st.metric("Estimated player PPDA", f"{estimated_ppda:.1f}")
+
+
 # --- Sidebar ---
 st.sidebar.header("Player Selection")
 sort_option = st.sidebar.radio("Sort Players By:", ('Alphabetical', 'By Threat Rank'))
@@ -455,7 +456,7 @@ if selected_player:
         plot_shot_map(selected_player)
 
     with tab4:
-        st.subheader("Player Impact on Team")
+        st.subheader("Player Impact Estimate")
         with st.expander("ℹ️ Information", expanded=False):
             st.write("**⚠️ This is an ESTIMATE based on minutes played.**")
             st.write("- xG attribution = Team xG × (player minutes / total possible minutes)")
